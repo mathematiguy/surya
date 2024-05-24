@@ -2,11 +2,11 @@ from typing import List
 from PIL import Image
 
 from surya.detection import batch_text_detection
-from surya.input.processing import slice_polys_from_image, slice_bboxes_from_image
+from surya.input.processing import slice_polys_from_image, slice_bboxes_from_image, calculate_polygon_dimensions
 from surya.postprocessing.text import sort_text_lines
 from surya.recognition import batch_recognition
 from surya.schema import TextLine, OCRResult
-
+    
 
 def run_recognition(images: List[Image.Image], langs: List[List[str]], rec_model, rec_processor, bboxes: List[List[List[int]]] = None, polygons: List[List[List[List[int]]]] = None, batch_size=None) -> List[OCRResult]:
     # Polygons need to be in corner format - [[x1, y1], [x2, y2], [x3, y3], [x4, y4]], bboxes in [x1, y1, x2, y2] format
@@ -64,7 +64,7 @@ def run_ocr(images: List[Image.Image], langs: List[List[str]], det_model, det_pr
     all_langs = []
 
     for idx, (det_pred, image, lang) in enumerate(zip(det_predictions, images, langs)):
-        polygons = [p.polygon for p in det_pred.bboxes]
+        polygons = [p.polygon for p in det_pred.bboxes if all(dim > 0 for dim in calculate_polygon_dimensions(p.polygon))]
         slices = slice_polys_from_image(image, polygons)
         slice_map.append(len(slices))
         all_langs.extend([lang] * len(slices))

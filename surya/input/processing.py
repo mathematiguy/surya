@@ -11,6 +11,17 @@ import torch
 from surya.settings import settings
 
 
+def calculate_polygon_dimensions(polygon):
+    
+    x_coords = [point[0] for point in polygon]
+    y_coords = [point[1] for point in polygon]
+    
+    width = max(x_coords) - min(x_coords)
+    height = max(y_coords) - min(y_coords)
+    
+    return width, height
+
+
 def get_total_splits(image_size, processor):
     img_height = list(image_size)[1]
     max_height = settings.DETECTOR_IMAGE_CHUNK_HEIGHT
@@ -99,7 +110,12 @@ def slice_and_pad_poly(image_array: np.array, coordinates):
 
     # Pad the area outside the polygon with the pad value
     mask = np.zeros(cropped_polygon.shape[:2], dtype=np.uint8)
+
+    if len(mask) == 0:
+        return None
+        
     cv2.fillPoly(mask, [np.int32(coordinates)], 1)
+    
     mask = np.stack([mask] * 3, axis=-1)
 
     cropped_polygon[mask == 0] = settings.RECOGNITION_PAD_VALUE
