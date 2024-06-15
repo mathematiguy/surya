@@ -29,6 +29,17 @@ def convert_if_not_rgb(images: List[Image.Image]) -> List[Image.Image]:
     return new_images
 
 
+def calculate_polygon_dimensions(polygon):
+    
+    x_coords = [point[0] for point in polygon]
+    y_coords = [point[1] for point in polygon]
+    
+    width = max(x_coords) - min(x_coords)
+    height = max(y_coords) - min(y_coords)
+    
+    return width, height
+
+
 def get_total_splits(image_size, processor):
     img_height = list(image_size)[1]
     max_height = settings.DETECTOR_IMAGE_CHUNK_HEIGHT

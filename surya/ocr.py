@@ -2,7 +2,7 @@ from typing import List
 from PIL import Image
 
 from surya.detection import batch_text_detection
-from surya.input.processing import slice_polys_from_image, slice_bboxes_from_image, calculate_polygon_dimensions, convert_if_not_rgb
+from surya.input.processing import slice_polys_from_image, slice_bboxes_from_image, convert_if_not_rgb, calculate_polygon_dimensions
 from surya.postprocessing.text import sort_text_lines
 from surya.recognition import batch_recognition
 from surya.schema import TextLine, OCRResult
