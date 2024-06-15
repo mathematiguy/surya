@@ -68,7 +68,8 @@ def run_ocr(images: List[Image.Image], langs: List[List[str]], det_model, det_pr
     all_langs = []
 
     for idx, (det_pred, image, lang) in enumerate(zip(det_predictions, images, langs)):
-        polygons = [p.polygon for p in det_pred.bboxes if all(dim > 0 for dim in calculate_polygon_dimensions(p.polygon))]
+        keep_polygons = [all(dim > 0 for dim in calculate_polygon_dimensions(p.polygon)) for p in det_pred.bboxes]
+        polygons = [p.polygon for p, keep in zip(det_pred.bboxes, keep_polygons) if keep]
         slices = slice_polys_from_image(image, polygons)
         slice_map.append(len(slices))
         all_langs.extend([lang] * len(slices))
@@ -84,6 +85,8 @@ def run_ocr(images: List[Image.Image], langs: List[List[str]], det_model, det_pr
         line_confidences = confidence_scores[slice_start:slice_end]
         slice_start = slice_end
 
+        det_pred.bboxes = [bbox for bbox, keep in zip(det_pred.bboxes, keep_polygons) if keep]
+        
         assert len(image_lines) == len(det_pred.bboxes)
 
         lines = []
