@@ -68,7 +68,7 @@ def run_ocr(images: List[Image.Image], langs: List[List[str]], det_model, det_pr
     all_langs = []
 
     for idx, (det_pred, image, lang) in enumerate(zip(det_predictions, images, langs)):
-        polygons = [p.polygon for p, keep in zip(det_pred.bboxes, keep_polygons) if keep]
+        polygons = [p.polygon for p in det_pred.bboxes]
         slices = slice_polys_from_image(image, polygons)
         slice_map.append(len(slices))
         all_langs.extend([lang] * len(slices))
