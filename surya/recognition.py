@@ -29,7 +29,8 @@ def batch_recognition(images: List, languages: List[List[str]], model, processor
     for l in languages:
         assert len(l) <= settings.RECOGNITION_MAX_LANGS, f"OCR only supports up to {settings.RECOGNITION_MAX_LANGS} languages per image, you passed {l}."
 
-    images = [image.convert("RGB") for image in images] # also copies the images
+    languages = [lang for lang, image in zip(languages, images) if not image is None]
+    images = [image.convert("RGB") for image in images if not image is None] # also copies the images
     if batch_size is None:
         batch_size = get_batch_size()
 
