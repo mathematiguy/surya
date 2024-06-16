@@ -85,7 +85,7 @@ def run_ocr(images: List[Image.Image], langs: List[List[str]], det_model, det_pr
         slice_start = slice_end
 
         keep_polygons = [all(dim > 0 for dim in calculate_polygon_dimensions(p.polygon)) for p in det_pred.bboxes]
-        image_lines = [image for image, keep in zip(image_lines, keep_polygons) if keen]
+        image_lines = [image for image, keep in zip(image_lines, keep_polygons) if keep]
         det_pred.bboxes = [bbox for bbox, keep in zip(det_pred.bboxes, keep_polygons) if keep]
         
         assert len(image_lines) == len(det_pred.bboxes)
