@@ -12,6 +12,14 @@ from surya.settings import settings
 from surya.postprocessing.text import get_text_size
 
 
+def calculate_polygon_dimensions(x1, y1, x2, y2):
+
+    width = x2-x1
+    height = y2-y1
+
+    return width, height
+
+
 def keep_largest_boxes(boxes: List[PolygonBox]) -> List[PolygonBox]:
     new_boxes = []
     for box_obj in boxes:
@@ -38,9 +46,17 @@ def keep_largest_boxes(boxes: List[PolygonBox]) -> List[PolygonBox]:
 
 def clean_contained_boxes(boxes: List[PolygonBox]) -> List[PolygonBox]:
     new_boxes = []
+
     for box_obj in boxes:
         box = box_obj.bbox
         contained = False
+
+        # If the box has an edge with zero dimension, skip it
+        width, height = calculate_polygon_dimensions(*box)
+
+        if width == 0 or height == 0:
+            continue
+
         for other_box_obj in boxes:
             if other_box_obj.polygon == box_obj.polygon:
                 continue
