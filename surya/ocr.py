@@ -4,7 +4,7 @@ from PIL import Image
 from surya.detection import batch_text_detection
 from surya.input.processing import slice_polys_from_image, slice_bboxes_from_image, convert_if_not_rgb
 from surya.postprocessing.text import sort_text_lines
-from surya.recognition import batch_recognition
+from surya.recognition import batch_recognition, batch_recognition_logits
 from surya.schema import TextLine, OCRResult
 
 
@@ -59,7 +59,7 @@ def run_recognition(images: List[Image.Image], langs: List[List[str]], rec_model
     return predictions_by_image
 
 
-def run_ocr(images: List[Image.Image], langs: List[List[str]], det_model, det_processor, rec_model, rec_processor, batch_size=None) -> List[OCRResult]:
+def run_ocr(images: List[Image.Image], langs: List[List[str]], det_model, det_processor, rec_model, rec_processor, batch_size=None, logits=False) -> List[OCRResult]:
     images = convert_if_not_rgb(images)
     det_predictions = batch_text_detection(images, det_model, det_processor)
 
@@ -75,6 +75,9 @@ def run_ocr(images: List[Image.Image], langs: List[List[str]], det_model, det_pr
         all_slices.extend(slices)
 
     rec_predictions, confidence_scores = batch_recognition(all_slices, all_langs, rec_model, rec_processor, batch_size=batch_size)
+
+    if logits:
+        return batch_recognition_logits(all_slices, all_langs, rec_model, rec_processor, batch_size=batch_size)
 
     predictions_by_image = []
     slice_start = 0
