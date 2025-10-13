@@ -1123,3 +1123,258 @@ class FoundationPredictor(BasePredictor):
         torch.cuda.empty_cache()
 
         return predicted_tokens, batch_bboxes, scores, topk_probs
+
+
+class LogitPredictor(FoundationPredictor):
+    """
+    Extended version of FoundationPredictor that captures raw logits during inference.
+    Inherits all functionality from FoundationPredictor but overrides process_outputs
+    to always store raw logits, and modifies prediction_loop to return them.
+    """
+    
+    def process_outputs(
+        self, outputs: SuryaModelOutput, max_lookahead_tokens: Optional[int] = None
+    ) -> ContinuousBatchOutput:
+        """Override to always store raw logits."""
+        lm_logits = outputs["lm_logits"].float()
+        bbox_logits = outputs["bbox_logits"].float()
+
+        if (
+            max_lookahead_tokens is not None
+            and lm_logits.shape[1] > max_lookahead_tokens + 1
+        ):
+            lm_logits = lm_logits[:, : max_lookahead_tokens + 1, :]
+            bbox_logits = bbox_logits[:, : max_lookahead_tokens + 1, :]
+
+        preds = torch.argmax(lm_logits, dim=-1)
+        input_ids = preds.to(torch.long)
+
+        token_probs = F.softmax(lm_logits, dim=-1)
+        scores = torch.max(token_probs, dim=-1).values
+
+        box_preds = bbox_logits * self.model.config.bbox_size
+        box_preds = box_preds.to(torch.long)
+
+        output = ContinuousBatchOutput(
+            input_ids=input_ids,
+            preds=preds,
+            bbox_preds=box_preds,
+            scores=scores,
+            token_probs=token_probs,
+        )
+        
+        # Always store raw logits in this version
+        output.raw_logits = lm_logits
+        
+        return output
+
+    def prediction_loop(
+        self,
+        images: List[np.ndarray],
+        input_texts: List[str],
+        task_names: List[TaskNames],
+        batch_size: int | None = None,
+        max_tokens: int | None = None,
+        max_sliding_window: int | None = None,
+        math_mode: bool = True,
+        drop_repeated_tokens: bool = True,
+        max_lookahead_tokens: Optional[int] = None,
+        top_k: int = 0,
+        tqdm_desc: str = "Recognizing Text"
+    ) -> tuple:
+        """
+        Modified prediction_loop that returns raw logits for each predicted token.
+        Returns: (predicted_tokens, batch_bboxes, scores, topk_probs, logits_list)
+        """
+        if max_lookahead_tokens is None:
+            max_lookahead_tokens = self.model.config.multi_output_distance
+        
+        allowed_tasks = self.tasks.keys()
+        assert all([task_name in allowed_tasks for task_name in task_names]), (
+            f"One or more tasks in {task_names} is not supported. Supported tasks are {allowed_tasks}"
+        )
+
+        predicted_tokens = [[] for _ in range(len(images))]
+        scores = [[] for _ in range(len(images))]
+        topk_probs = [[] for _ in range(len(images))]
+        logits_list = [[] for _ in range(len(images))]
+
+        if batch_size is None:
+            batch_size = self.get_batch_size()
+
+        batch_size = min(len(images), batch_size)
+        current_inputs = None
+
+        max_image_tokens = self.get_max_image_token_count(images, task_names)
+        if max_sliding_window is None:
+            max_sliding_window = self.model.config.sliding_window
+        self.setup_cache(
+            batch_size,
+            max_cache_len=max_image_tokens + max_sliding_window + self.extra_token_count.get(settings.TORCH_DEVICE_MODEL, 0),
+            max_sliding_window=max_sliding_window,
+        )
+
+        batch_max_tokens = {}
+        for idx, (img, txt, task) in enumerate(zip(images, input_texts, task_names)):
+            self.prompt_queue.append(
+                FoundationPrompt(
+                    id=idx, task_name=task, text=txt, image=img, math_mode=math_mode
+                )
+            )
+            batch_max_tokens[idx] = (
+                max_tokens
+                or settings.FOUNDATION_MAX_TOKENS
+                or self.tasks[task]["max_tokens"]
+            )
+
+        overall_max_tokens = max(batch_max_tokens.values())
+
+        pbar = tqdm(
+            total=len(self.prompt_queue),
+            desc=tqdm_desc,
+            disable=self.disable_tqdm,
+        )
+
+        batch_bboxes = torch.zeros(len(images), overall_max_tokens, 6)
+        batch_pos = [0] * len(images)
+
+        while self.prompt_queue or self.num_active_slots > 0:
+            if (
+                self.num_empty_slots / batch_size
+            ) >= self.min_prefill_ratio and self.prompt_queue:
+                updated_inputs, outputs, merge_idxs = self.prefill(
+                    current_inputs, max_lookahead_tokens=max_lookahead_tokens
+                )
+
+                predicted_tokens_cpu = outputs.preds.cpu()
+                scores_cpu = outputs.scores.cpu()
+                bbox_preds_cpu = outputs.bbox_preds.cpu()
+                raw_logits_cpu = outputs.raw_logits.cpu()
+
+                if top_k > 0:
+                    batch_top_k_probs, batch_top_k_indices = torch.topk(
+                        outputs.token_probs, k=top_k, dim=-1
+                    )
+                    batch_top_k_probs_cpu = batch_top_k_probs.cpu()
+                    batch_top_k_indices_cpu = batch_top_k_indices.cpu()
+
+                for temp_idx, b_idx in enumerate(merge_idxs):
+                    if self.batch_prompt_mapping[b_idx] is not None:
+                        p_idx = self.batch_prompt_mapping[b_idx]
+                        seq_len = predicted_tokens_cpu.shape[1]
+                        for t_idx in range(seq_len):
+                            token = predicted_tokens_cpu[temp_idx, t_idx].item()
+                            predicted_tokens[p_idx].append(token)
+                            batch_bboxes[p_idx, batch_pos[p_idx]] = bbox_preds_cpu[
+                                temp_idx, t_idx
+                            ]
+                            batch_pos[p_idx] += 1
+                            scores[p_idx].append(scores_cpu[temp_idx, t_idx].item())
+                            logits_list[p_idx].append(raw_logits_cpu[temp_idx, t_idx])
+
+                            if top_k > 0:
+                                top_k_scores = {
+                                    batch_top_k_indices_cpu[temp_idx, t_idx][
+                                        k
+                                    ].item(): batch_top_k_probs_cpu[temp_idx, t_idx][
+                                        k
+                                    ].item()
+                                    for k in range(top_k)
+                                }
+                                topk_probs[p_idx].append(top_k_scores)
+
+                            if token in [
+                                self.processor.eos_token_id,
+                                self.processor.no_output_token,
+                            ]:
+                                self.batch_prompt_mapping[b_idx] = None
+                                pbar.update(1)
+                                break
+            else:
+                updated_inputs, outputs = self.decode(
+                    current_inputs, max_lookahead_tokens=max_lookahead_tokens
+                )
+                mark_step()
+
+                predicted_tokens_cpu = outputs.preds.cpu()
+                scores_cpu = outputs.scores.cpu()
+                bbox_preds_cpu = outputs.bbox_preds.cpu()
+                raw_logits_cpu = outputs.raw_logits.cpu()
+
+                if top_k > 0:
+                    batch_top_k_probs, batch_top_k_indices = torch.topk(
+                        outputs.token_probs, k=top_k, dim=-1
+                    )
+                    batch_top_k_probs_cpu = batch_top_k_probs.cpu()
+                    batch_top_k_indices_cpu = batch_top_k_indices.cpu()
+
+                for b_idx, p_idx in self.batch_prompt_mapping.items():
+                    if p_idx is not None:
+                        seq_len = predicted_tokens_cpu.shape[1]
+                        num_tokens = updated_inputs.num_valid_tokens[b_idx].item()
+                        should_stop = False
+
+                        for t_idx in range(seq_len):
+                            if t_idx > 0 and num_tokens < seq_len:
+                                updated_inputs.input_ids[b_idx] = (
+                                    updated_inputs.input_ids[b_idx].roll(
+                                        shifts=seq_len - num_tokens, dims=0
+                                    )
+                                )
+                                break
+
+                            token = predicted_tokens_cpu[b_idx, t_idx].item()
+                            predicted_tokens[p_idx].append(token)
+                            batch_bboxes[p_idx, batch_pos[p_idx]] = bbox_preds_cpu[
+                                b_idx, t_idx
+                            ]
+                            batch_pos[p_idx] += 1
+                            scores[p_idx].append(scores_cpu[b_idx, t_idx].item())
+                            logits_list[p_idx].append(raw_logits_cpu[b_idx, t_idx])
+
+                            if top_k > 0:
+                                top_k_scores = {
+                                    batch_top_k_indices_cpu[temp_idx, t_idx][
+                                        k
+                                    ].item(): batch_top_k_probs_cpu[temp_idx, t_idx][
+                                        k
+                                    ].item()
+                                    for k in range(top_k)
+                                }
+                                topk_probs[p_idx].append(top_k_scores)
+
+                            repeats = len(predicted_tokens[p_idx]) >= batch_max_tokens[
+                                p_idx
+                            ] or (
+                                drop_repeated_tokens
+                                and detect_repeat_token(predicted_tokens[p_idx])
+                                and task_names[p_idx]
+                                in [
+                                    TaskNames.ocr_with_boxes,
+                                    TaskNames.ocr_without_boxes,
+                                ]
+                            )
+                            if (
+                                token
+                                in [
+                                    self.processor.eos_token_id,
+                                    self.processor.pad_token_id,
+                                ]
+                                or repeats
+                            ):
+                                should_stop = True
+                                break
+
+                        if should_stop:
+                            self.batch_prompt_mapping[b_idx] = None
+                            pbar.update(1)
+
+            current_inputs = updated_inputs
+
+        pbar.close()
+
+        del self.kv_cache
+        self.kv_cache = None
+        torch.cuda.empty_cache()
+
+        return predicted_tokens, batch_bboxes, scores, topk_probs, logits_list
